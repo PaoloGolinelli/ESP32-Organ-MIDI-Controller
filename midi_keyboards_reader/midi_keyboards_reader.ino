@@ -8,45 +8,50 @@
 // ---------------------
 //  Keyboard parameters
 // ---------------------
-#define N_SCAN_LINES_KEY1 8 // number of scan lines of keyboard 1
-#define N_SCAN_LINES_KEY2 8 // numebr of scan lines 
-#define N_KEYS_ROW 8        // todo
-#define ENABLE LOW          // logic value todo
-#define DEBOUNCE 2          // number of ENABLE readings required to set a note on / DISABLE readings required to set a note off
-#define BASE_NOTE 24        // lowest note on the keyboard (36 = C2)
+#define N_MANUALS 2           // number of manuals
+const uint8_t columns_per_manual[N_MANUALS] = {8, 8};       // number of columns for each manual
+const uint8_t midi_channel_per_manual[N_MANUALS] = {1, 2};  // midi channel for each manual
+const uint8_t base_note[N_MANUALS] = {24,24}                // lowest note for each manual
+#define N_ROWS 8              // number of rows of manuals
+#define ENABLE LOW            // active scan logic value - LOW for common cathode / HIGH for common anode
+#define SETTLE_TIME 5         // [us] row settling time
+#define DEBOUNCE 2            // number of ENABLE readings required to set a note on / DISABLE readings required to set a note off
+#define NOTE_VEL 127 // organs do not have dynamics. Set this value to the desired fixed velocity [0,127]
 
 
-const uint8_t n_scan_lines = N_SCAN_LINES_KEY1 + N_SCAN_LINES_KEY2; // 
+constexpr uint16_t computeTotalColumns() {
+  uint16_t sum = 0;
+  for (uint8_t i = 0; i < N_MANUALS; i++)
+    sum += columns_per_manual[i];
+  return sum;
+}
+constexpr uint16_t n_columns = computeTotalColumns();
+
 #define DISABLE !ENABLE
 
 // ---------------------------------------
 //  74HC595 shift register pin definition
 // ---------------------------------------
-#define LATCH_PIN 12 // Pin connected to ST_CP of 74HC595（Pin12） 
-#define CLOCK_PIN 13 // Pin connected to SH_CP of 74HC595（Pin11） 
-#define DATA_PIN  11 // Pin connected to DS of 74HC595（Pin14） 
+#define LATCH_PIN 12 // pin connected to ST_CP of 74HC595（Pin12） 
+#define CLOCK_PIN 13 // pin connected to SH_CP of 74HC595（Pin11） 
+#define DATA_PIN  11 // pin connected to DS of 74HC595（Pin14） 
 
-// ---------------------------------------
-//  MCU PIN inputs reading the N_KEYS_ROW
-// ---------------------------------------
-int key_pin[N_KEYS_ROW] = {4,5,6,7,15,16,17,18};
+// -----------------------------------
+//  MCU PIN inputs reading the N_ROWS
+// -----------------------------------
+int key_pin[N_ROWS] = {4,5,6,7,15,16,17,18};
 
 // --------------
 //  State arrays
 // --------------
-uint8_t keyboard_array[N_KEYS_ROW*n_scan_lines] = {0};
-bool notes_array[N_KEYS_ROW*n_scan_lines] = {0}; // boolean array to store if notes are on or off
+uint8_t keyboard_array[N_ROWS*n_columns] = {0};  // integer array for performing debounce of keys
+bool notes_array[N_ROWS*n_columns] = {0};        // boolean array to store if notes are on or off
 
-// ----------------
-//  MIDI paramters
-// ----------------
-#define NOTE_VEL 127 // organs do not have dynamics. Set this value to the desired fixed velocity [0,127]
-#define MIDI_CHANNEL_KEY1 1 // midi channel for manual 1
-#define MIDI_CHANNEL_KEY2 2 // midi channel for manual 2
-
+// -----------------
+//  MIDI OUT events
+// -----------------
 // create midi object
 USBMIDI MIDI;
-
 
 // define a struct for midi events
 typedef struct {
@@ -78,24 +83,26 @@ void setup() {
 
   // create task to run on secondary core (core 1) to read from queue and send MIDI commands to USB
   xTaskCreatePinnedToCore(midiTask, "MidiTask", 4096, NULL, 1, NULL, 1);
+  
 
-
-  // set pins to output 
+  // set I/O pins 
   pinMode(LATCH_PIN, OUTPUT); 
   pinMode(CLOCK_PIN, OUTPUT); 
   pinMode(DATA_PIN, OUTPUT); 
-
-  for (int pin=0; pin < N_KEYS_ROW; pin++)
-    pinMode(key_pin[pin], INPUT_PULLUP);
-
+  
+  for (int pin=0; pin < N_ROWS; pin++)
+    if (ENABLE == LOW)
+      pinMode(key_pin[pin], INPUT_PULLUP);
+    else if (ENABLE == HIGH)
+      pinMode(key_pin[pin], INPUT_PULLDOWN);
 
   // --- SCANNING INITIALISATION ---
   // set all scan lines to DISABLE
   digitalWrite(DATA_PIN, DISABLE);
-  digitalWrite(LATCH_PIN, LOW);               // disable output
-  for (int sl = 0; sl < n_scan_lines; sl++) {
-    digitalWrite(CLOCK_PIN, LOW);             // 
-    digitalWrite(CLOCK_PIN, HIGH);            // 
+  digitalWrite(LATCH_PIN, LOW);               // disable all output
+  for (int sl = 0; sl < n_columns; sl++) {
+    digitalWrite(CLOCK_PIN, LOW);             
+    digitalWrite(CLOCK_PIN, HIGH);            
   }
   digitalWrite(LATCH_PIN, HIGH);              // update output by rising level to latch pin
 
@@ -112,13 +119,13 @@ void loop() {
   MidiEvent midi_event;
 
   // --- SCANNING LOOP ---
-  for (int sl = 0; sl < n_scan_lines; sl++) {
+  for (int sc = 0; sc < n_columns; sc++) {
 
-    if (sl == 0) {
+    if (sc == 0) {
       // Initialise the first scan by sending a single ENABLE
       digitalWrite(DATA_PIN, ENABLE);
-    } else if (sl == 1) {
-      // Shift out a DISABLE for the rest N_SCANLINES-1
+    } else if (sc == 1) {
+      // Shift out a DISABLE for the rest n_columns-1
       digitalWrite(DATA_PIN, DISABLE);
     }
 
@@ -128,13 +135,13 @@ void loop() {
     digitalWrite(CLOCK_PIN, HIGH); // cycle the clock: rising-edge
     digitalWrite(LATCH_PIN, HIGH); // update output by rising level to latch pin
 
-    delayMicroseconds(5); // settle time
+    delayMicroseconds(SETTLE_TIME); // wait some time to let stable voltages on the row
 
     // --- READ 8 KEYS within ENABLED ROW ---
-    for (int key = 0; key < N_KEYS_ROW; key++) {
-      int idx_k = sl*N_KEYS_ROW + key; // current key index within the keyboards
+    for (int key = 0; key < N_ROWS; key++) {
+      int idx_k = sc*N_ROWS + key; // current key index within the keyboards
 
-      if (digitalRead(key_pin[key]) == ENABLE) {
+      if (digitalRead(key_pin[key]) == ENABLE) { // key pressed
 
         // increment value in the keyboard matrix, saturated at DEBOUNCE 
         if (keyboard_array[idx_k] < DEBOUNCE)
@@ -149,7 +156,7 @@ void loop() {
           xQueueSend(midiQueue, &midi_event, 0);
         } 
       }
-      else {
+      else { // key not pressed
         
         // decrase value in the keyboard matrix, minimised to 0
         if (keyboard_array[idx_k] > 0)
@@ -182,14 +189,11 @@ void midiTask(void *parameter) {
 
     if (xQueueReceive(midiQueue, &process_event, portMAX_DELAY)) {
 
-      // extract channel
-      if (process_event.note < 64) 
-        midi_channel = MIDI_CHANNEL_KEY1;
-      else
-        midi_channel = MIDI_CHANNEL_KEY2;
-
-      // compute actual note
-      int note = BASE_NOTE + (process_event.note % 64);
+      // extract channel and actual note index
+      uint16_t local_index;
+      uint8_t manual = getManualFromIndex(process_event.note, local_index);
+      uint8_t midi_channel = midi_channel_per_manual[manual];
+      uint8_t note = base_note[manual] + local_index;
 
       if (process_event.noteOn) {
         if (!DEBUG) 
@@ -206,4 +210,27 @@ void midiTask(void *parameter) {
       }
     }
   }
+}
+
+
+// function returning which manual does the note belong and the note index within the manual
+uint8_t getManualFromIndex(uint16_t global_index, uint16_t &local_index) {
+
+  uint16_t acc = 0;
+
+  for (uint8_t m = 0; m < N_MANUALS; m++) {
+
+    uint16_t manual_size = columns_per_manual[m] * N_ROWS;
+
+    if (global_index < acc + manual_size) {
+      local_index = global_index - acc;
+      return m;
+    }
+
+    acc += manual_size;
+  }
+
+  // fallback
+  local_index = 0;
+  return 0;
 }
