@@ -11,7 +11,7 @@
 #define N_MANUALS 2           // number of manuals
 const uint8_t columns_per_manual[N_MANUALS] = {8, 8};       // number of columns for each manual
 const uint8_t midi_channel_per_manual[N_MANUALS] = {1, 2};  // midi channel for each manual
-const uint8_t base_note[N_MANUALS] = {24,24}                // lowest note for each manual
+const uint8_t base_note[N_MANUALS] = {24,24};               // lowest note for each manual
 #define N_ROWS 8              // number of rows of manuals
 #define ENABLE LOW            // active scan logic value - LOW for common cathode / HIGH for common anode
 #define SETTLE_TIME 5         // [us] row settling time
@@ -61,6 +61,7 @@ typedef struct {
 
 // Create a task to run on secondary core
 void midiTask(void *parameter);
+
 // create a Queue of midi commands to be sent out
 QueueHandle_t midiQueue;
 #define QUEUE_LENGTH 256
